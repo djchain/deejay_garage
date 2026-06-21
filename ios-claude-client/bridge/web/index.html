@@ -26,7 +26,11 @@
   --top-height: 44px;
 }
 * { margin:0; padding:0; box-sizing:border-box; }
-html, body { height:100%; overflow:hidden; background:var(--bg); }
+html, body {
+  width:100%; height:100%; min-height:100%;
+  overflow:hidden; background:var(--bg);
+  overscroll-behavior:none;
+}
 body {
   font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Text', sans-serif;
   -webkit-font-smoothing: antialiased;
@@ -34,11 +38,16 @@ body {
   user-select: none;
   -webkit-user-select: none;
   touch-action: manipulation;
+  position:fixed;
+  inset:0;
 }
 
 #app {
   display:flex; flex-direction:column;
-  height:100%; height:100dvh;
+  height:var(--app-height, 100dvh);
+  max-height:var(--app-height, 100dvh);
+  width:100%;
+  overflow:hidden;
 }
 
 /* ── Top bar ─────────────── */
@@ -70,7 +79,7 @@ body {
 
 /* ── Terminal ────────────── */
 #terminal {
-  flex:1; overflow:hidden; background:var(--bg);
+  flex:1; min-height:0; overflow:hidden; background:var(--bg);
 }
 #terminal .xterm { height:100%; padding:4px 0 0 8px; }
 #terminal .xterm-viewport { scroll-behavior:auto; }
@@ -330,7 +339,40 @@ const webLinksAddon = new WebLinksAddon.WebLinksAddon();
 term.loadAddon(fitAddon);
 term.loadAddon(webLinksAddon);
 term.open(terminalEl);
-fitAddon.fit();
+
+// ── Mobile viewport / keyboard layout ──────────────
+let fitRaf = 0;
+let lastResizeCols = 0;
+let lastResizeRows = 0;
+
+function scheduleTerminalFit() {
+  if (fitRaf) cancelAnimationFrame(fitRaf);
+  fitRaf = requestAnimationFrame(() => {
+    fitRaf = 0;
+    fitAddon.fit();
+    if (term.cols !== lastResizeCols || term.rows !== lastResizeRows) {
+      lastResizeCols = term.cols;
+      lastResizeRows = term.rows;
+      send({ type:'resize', cols:term.cols, rows:term.rows });
+    }
+    if (isAtBottom) term.scrollToBottom();
+  });
+}
+
+function applyViewportLayout() {
+  const viewport = window.visualViewport;
+  const height = Math.max(240, Math.floor(viewport ? viewport.height : window.innerHeight));
+  document.documentElement.style.setProperty('--app-height', `${height}px`);
+  scheduleTerminalFit();
+}
+
+applyViewportLayout();
+window.addEventListener('resize', applyViewportLayout);
+window.addEventListener('orientationchange', () => setTimeout(applyViewportLayout, 250));
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', applyViewportLayout);
+  window.visualViewport.addEventListener('scroll', applyViewportLayout);
+}
 
 // ── Scroll-to-bottom ───────────────────────────────
 let isAtBottom = true;
@@ -518,14 +560,77 @@ pasteBtn.addEventListener('click', async () => {
 });
 
 // ── Terminal input ──────────────────────────────────
+let recentTermData = [];
+let imeComposing = false;
+function recordTermData(data) {
+  const now = performance.now();
+  recentTermData.push({ data, time: now });
+  recentTermData = recentTermData.filter(item => now - item.time < 750);
+}
+
+function termRecentlySent(text, since) {
+  const joined = recentTermData
+    .filter(item => item.time >= since - 25)
+    .map(item => item.data)
+    .join('');
+  return joined.includes(text);
+}
+
+function configureImeTextarea() {
+  const textarea = terminalEl.querySelector('.xterm-helper-textarea');
+  if (!textarea || textarea.dataset.imeFallback === '1') return;
+
+  textarea.dataset.imeFallback = '1';
+  textarea.setAttribute('autocomplete', 'off');
+  textarea.setAttribute('autocorrect', 'off');
+  textarea.setAttribute('autocapitalize', 'none');
+  textarea.setAttribute('spellcheck', 'false');
+  textarea.setAttribute('inputmode', 'text');
+
+  let composing = false;
+  let compositionText = '';
+  textarea.addEventListener('compositionstart', () => {
+    composing = true;
+    imeComposing = true;
+    compositionText = '';
+  });
+  textarea.addEventListener('compositionupdate', (e) => {
+    compositionText = e.data || compositionText;
+  });
+  textarea.addEventListener('compositionend', (e) => {
+    const committed = e.data || textarea.value || compositionText;
+    const endedAt = performance.now();
+    composing = false;
+    imeComposing = false;
+    compositionText = '';
+    if (!committed) return;
+
+    // xterm normally handles compositionend itself. iOS Chinese keyboards can
+    // occasionally commit text without xterm emitting onData, so send only if
+    // no matching terminal data appeared immediately around the commit.
+    setTimeout(() => {
+      if (!termRecentlySent(committed, endedAt)) {
+        send({ type:'input', data:committed });
+      }
+      textarea.value = '';
+    }, 150);
+  });
+  textarea.addEventListener('input', () => {
+    if (!composing) textarea.value = '';
+  });
+}
+
+configureImeTextarea();
+
 term.onData((data) => {
+  if (imeComposing) return;
+  recordTermData(data);
   send({ type:'input', data });
 });
 
 // ── Resize ──────────────────────────────────────────
 const ro = new ResizeObserver(() => {
-  fitAddon.fit();
-  send({ type:'resize', cols:term.cols, rows:term.rows });
+  scheduleTerminalFit();
 });
 ro.observe(terminalEl);
 

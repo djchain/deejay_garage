@@ -1,8 +1,8 @@
 // @ts-check
 const { test, expect } = require('@playwright/test');
 
-const BASE = 'http://localhost:9090';
-const WS_URL = 'ws://localhost:9090/ws';
+const BASE = process.env.PWA_BASE || 'http://localhost:9090';
+const WS_URL = BASE.replace(/^http/, 'ws') + '/ws';
 
 test.describe('Claude Remote PWA', () => {
 
@@ -83,6 +83,20 @@ test.describe('Claude Remote PWA', () => {
     await expect(page.locator('#menu-btn')).toBeVisible();
     await expect(page.locator('#status-dot')).toBeVisible();
     await expect(page.locator('#status-label')).toHaveText(/ONLINE|OFFLINE|CONN/);
+  });
+
+  test('mobile viewport sizing is applied to app layout', async ({ page }) => {
+    await page.goto(BASE);
+    await page.waitForSelector('.xterm', { timeout: 10000 });
+
+    const layout = await page.evaluate(() => {
+      const appHeight = getComputedStyle(document.documentElement).getPropertyValue('--app-height');
+      const terminalMinHeight = getComputedStyle(document.querySelector('#terminal')).minHeight;
+      return { appHeight, terminalMinHeight };
+    });
+
+    expect(parseFloat(layout.appHeight)).toBeGreaterThan(0);
+    expect(layout.terminalMinHeight).toBe('0px');
   });
 
   test('sidebar has create session input', async ({ page }) => {
@@ -167,6 +181,53 @@ test.describe('WebSocket integration', () => {
     expect(signals.some(m => m.name === 'int')).toBeTruthy(); // ctrl-c
     expect(inputs.some(m => m.data === '\x1b')).toBeTruthy(); // esc
     expect(inputs.some(m => m.data === '\x1b[A')).toBeTruthy(); // up
+  });
+
+  test('IME composition fallback sends committed Chinese text', async ({ page }) => {
+    await page.addInitScript(() => {
+      const NativeWebSocket = window.WebSocket;
+      window.__sentMessages = [];
+      window.__wsOpened = false;
+      window.WebSocket = function(url, protocols) {
+        const socket = protocols === undefined
+          ? new NativeWebSocket(url)
+          : new NativeWebSocket(url, protocols);
+        socket.addEventListener('open', () => { window.__wsOpened = true; });
+        return socket;
+      };
+      window.WebSocket.prototype = NativeWebSocket.prototype;
+      window.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+      window.WebSocket.OPEN = NativeWebSocket.OPEN;
+      window.WebSocket.CLOSING = NativeWebSocket.CLOSING;
+      window.WebSocket.CLOSED = NativeWebSocket.CLOSED;
+
+      const origSend = NativeWebSocket.prototype.send;
+      NativeWebSocket.prototype.send = function(data) {
+        try {
+          window.__sentMessages.push(JSON.parse(data));
+        } catch (_) {}
+        return origSend.call(this, data);
+      };
+    });
+
+    await page.goto(BASE);
+    await page.waitForSelector('.xterm-helper-textarea', { timeout: 10000 });
+    await page.waitForFunction(() => window.__wsOpened, null, { timeout: 10000 });
+
+    await page.evaluate(() => {
+      const textarea = document.querySelector('.xterm-helper-textarea');
+      textarea.focus();
+      textarea.dispatchEvent(new CompositionEvent('compositionstart', { data: '', bubbles: true }));
+      textarea.value = '你好';
+      textarea.dispatchEvent(new CompositionEvent('compositionupdate', { data: '你好', bubbles: true }));
+      textarea.dispatchEvent(new CompositionEvent('compositionend', { data: '你好', bubbles: true }));
+    });
+
+    await expect.poll(async () => {
+      return page.evaluate(() => window.__sentMessages
+        .filter(m => m.type === 'input' && m.data === '你好')
+        .length);
+    }).toBeGreaterThan(0);
   });
 
   test('ping/pong heartbeat works', async ({ page }) => {
