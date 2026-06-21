@@ -1,0 +1,12 @@
+# Go build artifacts
+bridge/claude-bridge
+
+# Dependencies
+bridge/node_modules/
+
+# Test artifacts
+bridge/test-results/
+
+# iOS build artifacts (may contain nested git repos)
+ios/.build/
+ios/DerivedData/
