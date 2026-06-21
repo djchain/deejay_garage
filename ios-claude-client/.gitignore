@@ -1,5 +1,6 @@
 # Go build artifacts
 bridge/claude-bridge
+bridge/bridge
 
 # Dependencies
 bridge/node_modules/
@@ -10,3 +11,8 @@ bridge/test-results/
 # iOS build artifacts (may contain nested git repos)
 ios/.build/
 ios/DerivedData/
+ios/build/
+
+# Xcode user-specific data
+**/xcuserdata/
+

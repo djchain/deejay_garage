@@ -530,6 +530,8 @@ func Start(addr string) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/ws", handleWebSocket)
+	mux.HandleFunc("/bark", handleBarkPush)
+	mux.HandleFunc("/bark/health", handleBarkHealth)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		log.Printf("Health check from: %s", r.RemoteAddr)
 		w.Header().Set("Content-Type", "text/plain")
